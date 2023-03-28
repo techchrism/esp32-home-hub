@@ -5,13 +5,17 @@
 #include <WebSocketsClient.h>
 #include <HTTPClient.h>
 #include <WiFiUdp.h>
+#include <WakeOnLan.h>
 
 WebSocketsClient webSocket;
+WiFiUDP UDP;
+WakeOnLan WOL(UDP);
 
 #define RES_BUFFER_SIZE 1024
 
 enum IncomingBinaryPacketType : uint8_t {
-    HTTP_REQUEST = 1
+    HTTP_REQUEST = 1,
+    WOL_REQUEST
 };
 
 enum OutgoingBinaryPacketType : uint8_t {
@@ -86,6 +90,12 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
                     httpRequest(requestNum, (const char *)(payload + sizeof(IncomingBinaryPacketType) + sizeof(uint16_t)));
                     break;
                 }
+                case WOL_REQUEST: {
+                    // Ensure final byte is null (c string)
+                    if(payload[length - 1] != 0x00) return;
+                    WOL.sendMagicPacket((const char *)(payload + sizeof(IncomingBinaryPacketType)));
+                    break;
+                }
                 default: {
                     break;
                 }
@@ -123,6 +133,9 @@ void setup() {
 
     webSocket.onEvent(onWebSocketEvent);
     webSocket.begin(WEBSOCKET_IP, WEBSOCKET_PORT, WEBSOCKET_PATH);
+
+    WOL.setRepeat(3, 100);
+    WOL.calculateBroadcastAddress(WiFi.localIP(), WiFi.subnetMask());
 }
 
 void loop() {
