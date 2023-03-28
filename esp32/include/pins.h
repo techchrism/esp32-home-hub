@@ -1,0 +1,5 @@
+#define DHT_DATA_PIN 23
+#define DHT_TYPE DHT11
+#define MHZ_SERIAL_NUM 1
+#define MHZ_SERIAL_RX_PIN 16
+#define MHZ_SERIAL_TX_PIN 17
