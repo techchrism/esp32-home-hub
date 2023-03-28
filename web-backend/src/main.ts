@@ -3,7 +3,8 @@ import {Buffer} from 'node:buffer'
 
 const incomingPacketTypes = {
     'HTTP_RESPONSE_DATA_END': 0x01,
-    'HTTP_RESPONSE_DATA': 0x02
+    'HTTP_RESPONSE_DATA': 0x02,
+    'SENSOR_DATA': 0x03
 }
 const outgoingPacketTypes = {
     'HTTP_REQUEST': 0x01,
@@ -81,11 +82,14 @@ wss.on('connection', ws => {
                 return
             }
 
-            if(data instanceof Buffer) {
+            if(data instanceof Buffer && data.length >= 1) {
                 const type = data.readUInt8(0)
-                const requestID = data.readUInt16LE(1)
-                const responsePart = data.readUInt16LE(3)
-                console.log(`Binary data: type=${type} requestID=${requestID} responsePart=${responsePart}`)
+                if(type === incomingPacketTypes.SENSOR_DATA) {
+                    const co2PPM = data.readUInt16LE(1)
+                    const temperature = data.readFloatLE(3)
+                    const humidity = data.readFloatLE(7)
+                    console.log(`CO2: ${co2PPM} ppm, Temperature: ${temperature} °C, Humidity: ${humidity} %`)
+                }
             }
         } else {
             console.log('received: %s', data)

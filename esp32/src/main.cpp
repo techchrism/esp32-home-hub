@@ -7,11 +7,14 @@
 #include <WiFiUdp.h>
 #include <WakeOnLan.h>
 
-WebSocketsClient webSocket;
-WiFiUDP UDP;
-WakeOnLan WOL(UDP);
+#include <MHZ19.h>
+#include "pins.h"
+#include <HardwareSerial.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
 
 #define RES_BUFFER_SIZE 1024
+#define SENSOR_READ_INTERVAL 5000
 
 enum IncomingBinaryPacketType : uint8_t {
     HTTP_REQUEST = 1,
@@ -20,7 +23,8 @@ enum IncomingBinaryPacketType : uint8_t {
 
 enum OutgoingBinaryPacketType : uint8_t {
     HTTP_RESPONSE_DATA_END = 1,
-    HTTP_RESPONSE_DATA
+    HTTP_RESPONSE_DATA,
+    SENSOR_DATA
 };
 
 struct __attribute__((packed)) ProxyResponseDataHeader {
@@ -28,6 +32,21 @@ struct __attribute__((packed)) ProxyResponseDataHeader {
     uint16_t requestID;
     uint16_t responsePart;
 };
+
+struct __attribute__((packed)) SensorData {
+    OutgoingBinaryPacketType type;
+    uint16_t co2_ppm;
+    float temperature;
+    float humidity;
+};
+
+DHT dht(DHT_DATA_PIN, DHT_TYPE);
+MHZ19 myMHZ19;
+HardwareSerial mhzSerial(MHZ_SERIAL_NUM);
+WebSocketsClient webSocket;
+WiFiUDP UDP;
+WakeOnLan WOL(UDP);
+int dataTimer = 0;
 
 // Performs an http GET request with the specified id and streams the response data over the websocket connection
 void httpRequest(uint16_t requestID, String url) {
@@ -61,6 +80,18 @@ void httpRequest(uint16_t requestID, String url) {
     webSocket.sendBIN(buffer, sizeof(ProxyResponseDataHeader));
 
     http.end();
+}
+
+void sendSensorData(int co2_ppm, float temp, float humidity) {
+    if(!webSocket.isConnected()) return;
+
+    SensorData data = {
+        .type = SENSOR_DATA,
+        .co2_ppm = co2_ppm,
+        .temperature = temp,
+        .humidity = humidity
+    };
+    webSocket.sendBIN((const uint8_t*)(&data), sizeof(SensorData));
 }
 
 void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
@@ -119,6 +150,12 @@ void setup() {
     Serial.begin(115200);
     Serial.println("");
 
+    mhzSerial.begin(9600, SERIAL_8N1, MHZ_SERIAL_RX_PIN, MHZ_SERIAL_TX_PIN);
+    myMHZ19.begin(mhzSerial);
+    myMHZ19.autoCalibration(false);
+
+    dht.begin();
+
     esp_wifi_set_ps(WIFI_PS_NONE);
     Serial.print("Connecting to ");
     Serial.println(WIFI_SSID);
@@ -140,4 +177,14 @@ void setup() {
 
 void loop() {
     webSocket.loop();
+    unsigned long now = millis();
+    if(now - dataTimer >= SENSOR_READ_INTERVAL) {
+        dataTimer = now;
+        int co2_ppm = myMHZ19.getCO2(false, true);
+        dht.read();
+        float temp = dht.readTemperature();
+        float humidity = dht.readHumidity();
+
+        sendSensorData(co2_ppm, temp, humidity);
+    }
 }
