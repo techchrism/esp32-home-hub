@@ -4,7 +4,8 @@ import {Buffer} from 'node:buffer'
 const incomingPacketTypes = {
     'HTTP_RESPONSE_DATA_END': 0x01,
     'HTTP_RESPONSE_DATA': 0x02,
-    'SENSOR_DATA': 0x03
+    'SENSOR_DATA': 0x03,
+    'TEMP_UPDATE': 0x04
 }
 const outgoingPacketTypes = {
     'HTTP_REQUEST': 0x01,
@@ -89,6 +90,15 @@ wss.on('connection', ws => {
                     const temperature = data.readFloatLE(3)
                     const humidity = data.readFloatLE(7)
                     console.log(`CO2: ${co2PPM} ppm, Temperature: ${temperature} °C, Humidity: ${humidity} %`)
+                } else if(type === incomingPacketTypes.TEMP_UPDATE) {
+                    const id = data.readUInt8(1)
+                    const temp = data.readInt16LE(2) / 10.0
+                    const humidity = data.readUInt8(4)
+                    const battery = data.readUInt8(5)
+                    const batteryVoltage = data.readUInt16LE(6) / 1000.0
+                    const tempf = temp * 1.8 + 32
+
+                    console.log(`Sensor ${id}: Temperature: ${temp} °C (${tempf}) °F, Humidity: ${humidity} %, Battery: ${battery} %, Voltage: ${batteryVoltage} V`)
                 }
             }
         } else {

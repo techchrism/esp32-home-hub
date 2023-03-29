@@ -13,8 +13,14 @@
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 
+#include <BLEDevice.h>
+#include <BLEAdvertisedDevice.h>
+
+#define sizeof_array(ARRAY) (sizeof(ARRAY)/sizeof(ARRAY[0]))
 #define RES_BUFFER_SIZE 1024
 #define SENSOR_READ_INTERVAL 5000
+#define BLE_SCAN_TIME_SECS 70
+
 
 enum IncomingBinaryPacketType : uint8_t {
     HTTP_REQUEST = 1,
@@ -24,7 +30,8 @@ enum IncomingBinaryPacketType : uint8_t {
 enum OutgoingBinaryPacketType : uint8_t {
     HTTP_RESPONSE_DATA_END = 1,
     HTTP_RESPONSE_DATA,
-    SENSOR_DATA
+    SENSOR_DATA,
+    TEMP_UPDATE
 };
 
 struct __attribute__((packed)) ProxyResponseDataHeader {
@@ -40,13 +47,82 @@ struct __attribute__((packed)) SensorData {
     float humidity;
 };
 
+struct __attribute__((packed)) TempUpdate {
+    OutgoingBinaryPacketType type;
+    uint8_t id;
+    int16_t temperature;
+    uint8_t humidity;
+    uint8_t battery;
+    uint16_t battery_voltage;
+};
+
 DHT dht(DHT_DATA_PIN, DHT_TYPE);
 MHZ19 myMHZ19;
 HardwareSerial mhzSerial(MHZ_SERIAL_NUM);
 WebSocketsClient webSocket;
 WiFiUDP UDP;
 WakeOnLan WOL(UDP);
+BLEScan *pBLEScan;
+
+bool found_devices[sizeof_array(deviceNames)];
+uint8_t counters[sizeof_array(deviceNames)];
 int dataTimer = 0;
+
+// Modified from https://github.com/leCandas/esp32-atc-mithermometer/blob/main/src/atc_custom.h
+class CustomAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
+    void onResult(BLEAdvertisedDevice advertisedDevice) {
+        uint8_t num_found = 0;
+        for(uint8_t i = 0; i < sizeof_array(deviceNames); i++) {
+            if(found_devices[i]) {
+                num_found++;
+                continue;
+            }
+            if(advertisedDevice.getName() != deviceNames[i]) continue;
+
+            found_devices[i] = true;
+            num_found++;
+
+            uint8_t* payload = advertisedDevice.getPayload();
+            size_t payloadLength = advertisedDevice.getPayloadLength();
+
+            const int8_t counter = payload[16];
+            if(counter == counters[i]) continue;
+            counters[i] = counter;
+            
+            TempUpdate tempUpdate = {
+                .type = TEMP_UPDATE,
+                .id = i,
+                .temperature = uint16_t(payload[11]) | (uint16_t(payload[10]) << 8),
+                .humidity = payload[12],
+                .battery = payload[13],
+                .battery_voltage = uint16_t(payload[15]) | (uint16_t(payload[14]) << 8)
+            };
+            if(webSocket.isConnected()) {
+                webSocket.sendBIN((const uint8_t*)(&tempUpdate), sizeof(TempUpdate));
+            }   
+        }
+        
+        if(num_found == sizeof_array(deviceNames)) {
+            pBLEScan->stop();
+        }
+    }
+};
+
+void taskScanBleDevices(void* pvParameters) {
+    for(uint8_t i = 0; i < sizeof_array(deviceNames); i++) {
+        counters[i] = 0;
+    }
+    while (true) {
+        for(uint8_t i = 0; i < sizeof_array(deviceNames); i++) {
+            found_devices[i] = false;
+        }
+
+        pBLEScan = BLEDevice::getScan();
+        pBLEScan->start(BLE_SCAN_TIME_SECS, false);
+        pBLEScan->clearResults();
+        vTaskDelay(5000 / portTICK_RATE_MS);
+    }
+}
 
 // Performs an http GET request with the specified id and streams the response data over the websocket connection
 void httpRequest(uint16_t requestID, String url) {
@@ -149,6 +225,15 @@ void onWebSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
 void setup() {
     Serial.begin(115200);
     Serial.println("");
+
+    BLEDevice::init("esp32");
+    pBLEScan = BLEDevice::getScan();
+    pBLEScan->setAdvertisedDeviceCallbacks(new CustomAdvertisedDeviceCallbacks(), true);
+    pBLEScan->setActiveScan(true);
+    pBLEScan->setInterval(50);
+    pBLEScan->setWindow(40);
+    TaskHandle_t bleScanHandle = nullptr;
+    xTaskCreate(taskScanBleDevices, "ble-scan", 2048, nullptr, tskIDLE_PRIORITY, &bleScanHandle);
 
     mhzSerial.begin(9600, SERIAL_8N1, MHZ_SERIAL_RX_PIN, MHZ_SERIAL_TX_PIN);
     myMHZ19.begin(mhzSerial);
