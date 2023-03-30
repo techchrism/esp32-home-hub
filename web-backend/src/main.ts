@@ -4,6 +4,24 @@ import WebSocket, {WebSocketServer} from 'ws'
 import {Buffer} from 'node:buffer'
 import winston from 'winston'
 import 'winston-daily-rotate-file'
+import Koa from 'koa'
+import websockify from 'koa-websocket'
+
+interface SensorData {
+    co2PPM: number
+    temperature: number
+    humidity: number
+    from: number
+}
+
+interface TemperatureData {
+    sensorID: number
+    temperature: number
+    humidity: number
+    battery: number
+    batteryVoltage: number
+    from: number
+}
 
 const incomingPacketTypes = {
     'HTTP_RESPONSE_DATA_END': 0x01,
@@ -99,25 +117,27 @@ const logger = winston.createLogger({
 })
 logger.info('Starting...')
 
-const wss = new WebSocketServer({
-    port: Number(process.env.PORT || 8080),
-    host: process.env.HOST
-})
+const app = websockify(new Koa())
+
+let latestSensorData: undefined | SensorData = undefined
+let latestTemperatureData = new Map<number, TemperatureData>()
+
 let idCounter = 0
-wss.on('connection', ws => {
+app.ws.use(async (ctx, next) => {
     const id = idCounter++
     logger.info('Connection', {id})
 
-    ws.on('error', err => logger.error(err.toString(), {id}))
-    ws.on('close', () => logger.info('Connection closed', {id}))
+    ctx.websocket.on('error', err => logger.error(err.toString(), {id}))
+    ctx.websocket.on('close', () => logger.info('Connection closed', {id}))
 
-    ws.on('message', (data, isBinary) => {
+    ctx.websocket.on('message', (data, isBinary) => {
         if(isBinary && data instanceof Buffer && data.length >= 1) {
             const type = data.readUInt8(0)
             if(type === incomingPacketTypes.SENSOR_DATA) {
                 const co2PPM = data.readUInt16LE(1)
                 const temperature = data.readFloatLE(3)
                 const humidity = data.readFloatLE(7)
+                latestSensorData = {co2PPM, temperature, humidity, from: Date.now()}
 
                 logger.info('Sensor data', {id, co2PPM, temperature, humidity});
             } else if(type === incomingPacketTypes.TEMP_UPDATE) {
@@ -126,9 +146,17 @@ wss.on('connection', ws => {
                 const humidity = data.readUInt8(4)
                 const battery = data.readUInt8(5)
                 const batteryVoltage = data.readUInt16LE(6) / 1000.0
+                latestTemperatureData.set(sensorID, {sensorID, temperature: temp, humidity, battery, batteryVoltage, from: Date.now()})
 
                 logger.info('Temperature update', {id, sensorID, temp, humidity, battery, batteryVoltage})
             }
         }
     })
-});
+})
+
+app.use(async (ctx, next) => {
+    ctx.set('Content-Type', 'application/json')
+    ctx.body = JSON.stringify({sensor: latestSensorData, temperature: Array.from(latestTemperatureData.values())})
+})
+
+app.listen(Number(process.env.PORT || 8080), process.env.HOST)
