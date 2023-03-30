@@ -1,5 +1,7 @@
 import WebSocket, {WebSocketServer} from 'ws'
 import {Buffer} from 'node:buffer'
+import winston from 'winston'
+import 'winston-daily-rotate-file'
 
 const incomingPacketTypes = {
     'HTTP_RESPONSE_DATA_END': 0x01,
@@ -70,42 +72,57 @@ function sendWakeOnLan(ws: WebSocket, mac: string) {
     ws.send(buffer)
 }
 
-const wss = new WebSocketServer({port: 8080})
-wss.on('connection', ws => {
-    console.log('Connection!');
+const logger = winston.createLogger({
+    level: 'silly',
+    transports: [
+        new winston.transports.Console({
+            level: 'info',
+            format: winston.format.combine(
+                winston.format.colorize(),
+                winston.format.padLevels(),
+                winston.format.simple()
+            )
+        }),
+        new winston.transports.DailyRotateFile({
+            level: 'silly',
+            dirname: 'logs',
+            filename: 'log-%DATE%.log',
+            zippedArchive: true,
+            format: winston.format.combine(
+                winston.format.timestamp(),
+                winston.format.json()
+            )
+        })
+    ]
+})
+logger.info('Starting...')
 
-    ws.on('error', console.error)
+const wss = new WebSocketServer({port: 8080})
+let idCounter = 0
+wss.on('connection', ws => {
+    const id = idCounter++
+    logger.info('Connection', {id})
+
+    ws.on('error', err => logger.error(err.toString(), {id}))
+    ws.on('close', () => logger.info('Connection closed', {id}))
 
     ws.on('message', (data, isBinary) => {
-        if(isBinary) {
-            if(Array.isArray(data)) {
-                console.log('Unhandled array of binary data')
-                return
-            }
+        if(isBinary && data instanceof Buffer && data.length >= 1) {
+            const type = data.readUInt8(0)
+            if(type === incomingPacketTypes.SENSOR_DATA) {
+                const co2PPM = data.readUInt16LE(1)
+                const temperature = data.readFloatLE(3)
+                const humidity = data.readFloatLE(7)
+                logger.info('Sensor data', {id, co2PPM, temperature, humidity});
+            } else if(type === incomingPacketTypes.TEMP_UPDATE) {
+                const sensorID = data.readUInt8(1)
+                const temp = data.readInt16LE(2) / 10.0
+                const humidity = data.readUInt8(4)
+                const battery = data.readUInt8(5)
+                const batteryVoltage = data.readUInt16LE(6) / 1000.0
 
-            if(data instanceof Buffer && data.length >= 1) {
-                const type = data.readUInt8(0)
-                if(type === incomingPacketTypes.SENSOR_DATA) {
-                    const co2PPM = data.readUInt16LE(1)
-                    const temperature = data.readFloatLE(3)
-                    const humidity = data.readFloatLE(7)
-                    console.log(`CO2: ${co2PPM} ppm, Temperature: ${temperature} °C, Humidity: ${humidity} %`)
-                } else if(type === incomingPacketTypes.TEMP_UPDATE) {
-                    const id = data.readUInt8(1)
-                    const temp = data.readInt16LE(2) / 10.0
-                    const humidity = data.readUInt8(4)
-                    const battery = data.readUInt8(5)
-                    const batteryVoltage = data.readUInt16LE(6) / 1000.0
-                    const tempf = temp * 1.8 + 32
-
-                    console.log(`Sensor ${id}: Temperature: ${temp} °C (${tempf}) °F, Humidity: ${humidity} %, Battery: ${battery} %, Voltage: ${batteryVoltage} V`)
-                }
+                logger.info('Temperature update', {id, sensorID, temp, humidity, battery, batteryVoltage})
             }
-        } else {
-            console.log('received: %s', data)
         }
     })
-    ws.on('close', () => {
-        console.log('Connection closed')
-    });
 });
