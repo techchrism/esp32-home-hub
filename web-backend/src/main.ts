@@ -1,3 +1,5 @@
+import * as dotenv from 'dotenv'
+dotenv.config()
 import WebSocket, {WebSocketServer} from 'ws'
 import {Buffer} from 'node:buffer'
 import winston from 'winston'
@@ -97,7 +99,10 @@ const logger = winston.createLogger({
 })
 logger.info('Starting...')
 
-const wss = new WebSocketServer({port: 8080})
+const wss = new WebSocketServer({
+    port: Number(process.env.PORT || 8080),
+    host: process.env.HOST
+})
 let idCounter = 0
 wss.on('connection', ws => {
     const id = idCounter++
@@ -113,6 +118,7 @@ wss.on('connection', ws => {
                 const co2PPM = data.readUInt16LE(1)
                 const temperature = data.readFloatLE(3)
                 const humidity = data.readFloatLE(7)
+
                 logger.info('Sensor data', {id, co2PPM, temperature, humidity});
             } else if(type === incomingPacketTypes.TEMP_UPDATE) {
                 const sensorID = data.readUInt8(1)
