@@ -5,6 +5,7 @@ import {Buffer} from 'node:buffer'
 import winston from 'winston'
 import 'winston-daily-rotate-file'
 import Koa from 'koa'
+import cors from '@koa/cors'
 import websockify from 'koa-websocket'
 
 interface SensorData {
@@ -118,6 +119,7 @@ const logger = winston.createLogger({
 logger.info('Starting...')
 
 const app = websockify(new Koa())
+app.use(cors())
 
 let latestSensorData: undefined | SensorData = undefined
 let latestTemperatureData = new Map<number, TemperatureData>()
