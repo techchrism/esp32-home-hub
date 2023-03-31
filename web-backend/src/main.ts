@@ -1,12 +1,14 @@
 import * as dotenv from 'dotenv'
 dotenv.config()
-import WebSocket, {WebSocketServer} from 'ws'
+import WebSocket from 'ws'
 import {Buffer} from 'node:buffer'
 import winston from 'winston'
 import 'winston-daily-rotate-file'
 import Koa from 'koa'
 import cors from '@koa/cors'
 import websockify from 'koa-websocket'
+import Router from '@koa/router'
+import bodyParser from 'koa-bodyparser'
 
 interface SensorData {
     co2PPM: number
@@ -22,6 +24,10 @@ interface TemperatureData {
     battery: number
     batteryVoltage: number
     from: number
+}
+
+interface WOLRequest {
+    mac: string
 }
 
 const incomingPacketTypes = {
@@ -120,13 +126,16 @@ logger.info('Starting...')
 
 const app = websockify(new Koa())
 app.use(cors())
+app.use(bodyParser())
 
 let latestSensorData: undefined | SensorData = undefined
 let latestTemperatureData = new Map<number, TemperatureData>()
 
 let idCounter = 0
+let latestConnected: WebSocket | undefined = undefined
 app.ws.use(async (ctx, next) => {
     const id = idCounter++
+    latestConnected = ctx.websocket
     logger.info('Connection', {id})
 
     ctx.websocket.on('error', err => logger.error(err.toString(), {id}))
@@ -156,9 +165,21 @@ app.ws.use(async (ctx, next) => {
     })
 })
 
-app.use(async (ctx, next) => {
+const router = new Router()
+router.get('/', async ctx => {
     ctx.set('Content-Type', 'application/json')
     ctx.body = JSON.stringify({sensor: latestSensorData, temperature: Array.from(latestTemperatureData.values())})
 })
+
+router.post('/wol', async ctx => {
+    if(latestConnected && latestConnected.readyState === WebSocket.OPEN) {
+        sendWakeOnLan(latestConnected, (ctx.request.body as WOLRequest).mac)
+        ctx.status = 200
+    } else {
+        ctx.status = 503
+    }
+})
+app.use(router.routes())
+app.use(router.allowedMethods())
 
 app.listen(Number(process.env.PORT || 8080), process.env.HOST)
